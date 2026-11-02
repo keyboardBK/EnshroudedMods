@@ -1,0 +1,9 @@
+{
+  "id": "speedmod_boots",
+  "name": "SpeedMod - Equipped Boot Rarity",
+  "version": "0.1.0",
+  "description": "ALPHA: actual equipped boot rarity selects a temporary native sprint bonus. Requires SpeedMod EML data. Live movement and multiplayer are unverified.",
+  "authors": ["KeyboardBK"],
+  "emf": 15,
+  "side": "both"
+}

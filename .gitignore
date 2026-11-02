@@ -1,0 +1,11 @@
+**/build/
+**/package/
+**/runtime-backup/
+.vs/
+*.obj
+*.pdb
+*.dll
+*.exe
+*.lib
+*.exp
+*.zip
