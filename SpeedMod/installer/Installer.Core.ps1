@@ -38,7 +38,7 @@ function Get-InstallerManifest([string]$Package) {
     return @{ Dependencies = $deps; Mod = $mod }
 }
 
-function Get-InstallPlan([string]$Game, [string]$Package) {
+function Get-InstallPlan([string]$Game, [string]$Package, [bool]$Removing = $false) {
     $root = [IO.Path]::GetFullPath($Game).TrimEnd('\')
     foreach ($name in @('enshrouded.exe', 'enshrouded.kfc', 'enshrouded.kfc_resources')) {
         $at = Get-SafeGamePath $root $name
@@ -52,13 +52,13 @@ function Get-InstallPlan([string]$Game, [string]$Package) {
     if ($running) { throw "게임과 모드 매니저를 종료한 뒤 다시 설치해 주세요. $running" }
     $core = Join-Path $root 'emf\emf_core.dll'
     $coreSpec = @($manifest.Dependencies.emf_files | Where-Object { $_.path -eq 'emf/emf_core.dll' })[0]
-    if ((Test-Path -LiteralPath $core) -and (Get-Sha256Hex $core) -ne $coreSpec.sha256) {
+    if (-not $Removing -and (Test-Path -LiteralPath $core) -and (Get-Sha256Hex $core) -ne $coreSpec.sha256) {
         throw '다른 버전의 EMF가 이미 설치돼 있습니다. 기존 모드 구성을 보호하기 위해 자동 교체를 중단했습니다. 이 설치 파일은 EMF 0.3.5를 사용합니다.'
     }
     $tools = Read-KnownTools (Join-Path $Package 'backend\vendor\known_tools.txt')
     $proxy = Join-Path $root 'dinput8.dll'
     $movePlan = $null
-    if ((Test-Path -LiteralPath $proxy) -and -not (Test-EmfLoader $proxy) -and (Get-DllToolName $proxy $tools) -ne 'eml') {
+    if (-not $Removing -and (Test-Path -LiteralPath $proxy) -and -not (Test-EmfLoader $proxy) -and (Get-DllToolName $proxy $tools) -ne 'eml') {
         $movePlan = Get-MovePlan $root $proxy $tools
         $null = Get-SafeGamePath $root $movePlan.Name
     }
@@ -280,23 +280,156 @@ function Invoke-DataPatch([string]$Cli, [string]$Game, [string]$LogFile) {
     } finally { $process.Dispose() }
 }
 
+function Save-GameSaves($Transaction) {
+    $count = 0
+    foreach ($save in @(Find-SaveFiles (Get-SaveRoots))) {
+        $destination = Get-SafeGamePath (Join-Path $Transaction.Backup 'saves') $save.Path
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        $checked = Copy-SaveFileChecked $save.Source $destination
+        if (-not $checked.Ok) { throw "저장 파일 백업 실패: $($save.Name)" }
+        $count++
+    }
+    return $count
+}
+
+function Get-GeneratedContainers([string]$Game, [int]$BaseCount) {
+    foreach ($file in Get-ChildItem -LiteralPath $Game -File -Filter 'enshrouded_*.dat') {
+        if ($file.Name -match '^enshrouded_(\d+)\.dat$' -and [int]$Matches[1] -ge $BaseCount) {
+            $null = Get-SafeGamePath $Game $file.Name
+            $file.Name
+        }
+    }
+}
+
+function Save-PatchState($Transaction) {
+    foreach ($path in @('enshrouded.kfc', 'enshrouded.kfc_resources', 'enshrouded.kfc.bak', '.cache\files.json', '.cache\types.json', '.cache\lua\types.lua', '.cache\lua\base.lua')) {
+        Save-InstallOriginal $Transaction $path
+    }
+    # EML may overwrite extra content containers belonging to OTHER data mods.
+    # Original containers are immutable; only indices >= the original KFC count are writable.
+    $base = Get-SafeGamePath $Transaction.Game 'enshrouded.kfc.bak'
+    if (-not (Test-Path -LiteralPath $base)) { $base = Get-SafeGamePath $Transaction.Game 'enshrouded.kfc' }
+    $reader = New-Object IO.BinaryReader([IO.File]::OpenRead($base))
+    try {
+        if ($reader.ReadUInt32() -ne 0x3443464B -or $reader.BaseStream.Length -lt 32) { throw '원본 KFC 형식을 확인할 수 없습니다.' }
+        $reader.BaseStream.Position = 28
+        $count = $reader.ReadUInt32()
+        if ($count -lt 1 -or $count -gt 4096) { throw '원본 KFC 컨테이너 수가 올바르지 않습니다.' }
+    } finally { $reader.Dispose() }
+    $Transaction.BaseContainers = [int]$count
+    $Transaction.ExistingContainers = @{}
+    foreach ($path in @(Get-GeneratedContainers $Transaction.Game $count)) {
+        $Transaction.ExistingContainers[$path] = $true
+        Save-InstallOriginal $Transaction $path
+    }
+}
+
+function Register-NewPatchContainers($Transaction) {
+    if (-not $Transaction.PatchMayHaveRun) { return }
+    foreach ($path in @(Get-GeneratedContainers $Transaction.Game $Transaction.BaseContainers)) {
+        if (-not $Transaction.ExistingContainers.ContainsKey($path) -and -not $Transaction.Seen.ContainsKey($path)) {
+            $Transaction.Entries.Add([pscustomobject]@{ path = $path; existed = $false })
+            $Transaction.Seen[$path] = $true
+        }
+    }
+    Write-TransactionJournal $Transaction
+}
+
+function Get-SpeedModRemovalPlan([string]$Game, [string]$Package, [bool]$ItemsRestored) {
+    if (-not $ItemsRestored) { throw '제거 전 호스트 EMF 콘솔의 speedmod_boots.restore로 모든 캐릭터·월드·창고 신발을 복구하고 저장했는지 확인해야 합니다. 오프라인 캐릭터와 미로드 창고는 자동 복구되지 않습니다.' }
+    $plan = Get-InstallPlan $Game $Package $true
+    $plan.RemoveFiles = New-Object 'Collections.Generic.List[string]'
+    $plan.RemoveDirectories = New-Object 'Collections.Generic.List[string]'
+    foreach ($spec in @(@('mods\SpeedMod', 'SpeedMod'), @('emf\mods\speedmod_boots', 'speedmod_boots'))) {
+        $root = Get-SafeGamePath $plan.Game $spec[0]
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $manifest = Get-SafeGamePath $plan.Game ($spec[0] + '\mod.json')
+        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf) -or
+            (([IO.File]::ReadAllText($manifest) | ConvertFrom-Json).id -cne $spec[1])) {
+            throw "다른 모드일 수 있어 제거를 중단했습니다: $($spec[0])"
+        }
+        # Explicit traversal validates each path BEFORE descending into it; never follow links.
+        $pending = New-Object 'Collections.Generic.Queue[string]'
+        $pending.Enqueue($spec[0])
+        while ($pending.Count) {
+            $relative = $pending.Dequeue()
+            $at = Get-SafeGamePath $plan.Game $relative
+            $plan.RemoveDirectories.Add($relative)
+            foreach ($entry in Get-ChildItem -LiteralPath $at -Force) {
+                $name = $relative + '\' + $entry.Name
+                $null = Get-SafeGamePath $plan.Game $name
+                if ($entry.PSIsContainer) { $pending.Enqueue($name) } else { $plan.RemoveFiles.Add($name) }
+            }
+        }
+    }
+    $bootstrap = Get-SafeGamePath $plan.Game 'speedmod_bootstrap.dll'
+    if (Test-Path -LiteralPath $bootstrap -PathType Leaf) { $plan.RemoveFiles.Add('speedmod_bootstrap.dll') }
+    if (-not $plan.RemoveFiles.Count) { throw '제거할 SpeedMod 파일을 찾지 못했습니다.' }
+    # Keep the existing EML and all its chain entries, even when named speedmod_eml.dll.
+    $null = Get-SafeGamePath $plan.Game 'dinput8-chain.ini'
+    foreach ($name in @(Get-ChainEntries $plan.Game)) { $null = Get-SafeGamePath $plan.Game $name }
+    return $plan
+}
+
+function Invoke-SpeedModRemove($Plan, [string]$Scratch, [string]$DependencyDirectory = '', [bool]$Offline = $false, [scriptblock]$FailureInjector = $null) {
+    Write-InstallStatus 10 'EML 패치 도구를 확인합니다. EML·EMF와 다른 모드는 유지합니다.'
+    New-Item -ItemType Directory -Force -Path $Scratch | Out-Null
+    $spec = $Plan.Manifest.Dependencies.eml_cli
+    $candidates = @((Join-Path $Plan.Game 'SpeedModInstaller\tools\emm.exe'), (Join-Path $Plan.Game 'EnshroudedMods\emm.exe'))
+    if ($DependencyDirectory) { $candidates = @((Join-Path $DependencyDirectory $spec.file)) + $candidates }
+    $cli = Get-VerifiedDownload $spec (Join-Path $Scratch 'remove-emm.exe') $candidates $Offline
+    $tx = New-InstallTransaction $Plan.Game
+    try {
+        Write-InstallStatus 30 '현재 데이터와 SpeedMod 파일·설정·저장 파일을 백업합니다.'
+        Save-PatchState $tx
+        Save-InstallOriginal $tx 'dinput8-chain.ini'
+        foreach ($path in $Plan.RemoveFiles) { Save-InstallOriginal $tx $path }
+        $saveCount = Save-GameSaves $tx
+        $tx.Status = 'removing'; Write-TransactionJournal $tx
+        foreach ($path in $Plan.RemoveFiles) { Remove-Item -LiteralPath (Get-SafeGamePath $Plan.Game $path) }
+        # Only the two validated SpeedMod folders, deepest first, and never recursively.
+        for ($i = $Plan.RemoveDirectories.Count - 1; $i -ge 0; $i--) {
+            [IO.Directory]::Delete((Get-SafeGamePath $Plan.Game $Plan.RemoveDirectories[$i]), $false)
+        }
+        $chain = Read-ChainFile $Plan.Game
+        $indexes = @(Get-ChainLineIndexes @($chain.Lines))
+        $lines = @(for ($i = 0; $i -lt $chain.Lines.Count; $i++) {
+            if ($indexes -contains $i -and $chain.Lines[$i].Trim() -ieq 'speedmod_bootstrap.dll') { continue }
+            $chain.Lines[$i]
+        })
+        $chainPath = Join-Path $Scratch 'remove-chain.ini'
+        [IO.File]::WriteAllText($chainPath, (($lines -join "`r`n") + "`r`n"), $chain.Encoding)
+        Copy-InstallFile $tx 'dinput8-chain.ini' $chainPath
+        if ($FailureInjector) { & $FailureInjector 'after-files' }
+        Write-InstallStatus 70 'SpeedMod를 제외한 나머지 EML 모드를 다시 적용합니다.'
+        $tx.PatchMayHaveRun = $true
+        Invoke-DataPatch $cli $Plan.Game (Join-Path $tx.Backup 'patch.log')
+        Register-NewPatchContainers $tx
+        if ($FailureInjector) { & $FailureInjector 'after-patch' }
+        $statePath = Join-Path $Scratch 'removed-state.json'
+        $state = @{ installer_version = $Plan.Manifest.Dependencies.installer_version; status = 'removed'; removed_at = (Get-Date).ToString('o'); backup = $tx.Backup; save_files_backed_up = $saveCount }
+        [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+        Copy-InstallFile $tx 'SpeedModInstaller\install-state.json' $statePath
+        $tx.Status = 'completed'; Write-TransactionJournal $tx
+        Write-InstallStatus 100 'SpeedMod만 제거했습니다. EML·EMF와 다른 모드는 유지했습니다.'
+        return [pscustomobject]@{ success = $true; removed = $true; game = $Plan.Game; backup = $tx.Backup; save_files_backed_up = $saveCount }
+    } catch {
+        $originalError = $_
+        Register-NewPatchContainers $tx
+        Undo-InstallTransaction $tx
+        throw ("제거에 실패해 기존 파일을 복구했습니다. {0} 백업: {1}" -f $originalError.Exception.Message, $tx.Backup)
+    }
+}
+
 function Invoke-SpeedModInstall($Plan, [string]$Scratch, [string]$DependencyDirectory = '', [bool]$Offline = $false, [scriptblock]$FailureInjector = $null) {
     Write-InstallStatus 10 '필수 구성요소를 준비합니다. 처음 설치할 때 인터넷 연결이 필요합니다.'
     $prepared = Get-PreparedDependencies $Plan (Join-Path $Scratch 'dependencies') $DependencyDirectory $Offline
     Write-InstallStatus 35 '기존 설정과 게임 데이터를 백업합니다.'
     $tx = New-InstallTransaction $Plan.Game
     try {
-        foreach ($path in @('enshrouded.kfc', 'enshrouded.kfc_resources', 'enshrouded.kfc.bak', '.cache\files.json', '.cache\types.json', 'dinput8-chain.ini')) {
-            Save-InstallOriginal $tx $path
-        }
-        $saveCount = 0
-        foreach ($save in @(Find-SaveFiles (Get-SaveRoots))) {
-            $destination = Get-SafeGamePath (Join-Path $tx.Backup 'saves') $save.Path
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
-            $checked = Copy-SaveFileChecked $save.Source $destination
-            if (-not $checked.Ok) { throw "저장 파일 백업 실패: $($save.Name)" }
-            $saveCount++
-        }
+        Save-PatchState $tx
+        Save-InstallOriginal $tx 'dinput8-chain.ini'
+        $saveCount = Save-GameSaves $tx
         $tx.Status = 'installing'; Write-TransactionJournal $tx
         Write-InstallStatus 50 '모드와 실행 구성을 설치합니다.'
         if ($Plan.MovePlan -and -not $Plan.MovePlan.Identical) {
@@ -325,7 +458,9 @@ function Invoke-SpeedModInstall($Plan, [string]$Scratch, [string]$DependencyDire
         Set-SpeedModChain $Plan $tx $Scratch
         if ($FailureInjector) { & $FailureInjector 'after-files' }
         Write-InstallStatus 80 '신발 데이터를 생성합니다. 이 과정은 잠시 걸릴 수 있습니다.'
+        $tx.PatchMayHaveRun = $true
         Invoke-DataPatch (Join-Path $Plan.Game 'SpeedModInstaller\tools\emm.exe') $Plan.Game (Join-Path $tx.Backup 'patch.log')
+        Register-NewPatchContainers $tx
         if ($FailureInjector) { & $FailureInjector 'after-patch' }
         $state = [ordered]@{ installer_version = $Plan.Manifest.Dependencies.installer_version; mod_version = $Plan.Manifest.Dependencies.mod_version
             installed_at = (Get-Date).ToString('o'); backup = $tx.Backup; save_files_backed_up = $saveCount
@@ -339,6 +474,7 @@ function Invoke-SpeedModInstall($Plan, [string]$Scratch, [string]$DependencyDire
     } catch {
         $originalError = $_
         Write-Host '설치를 중단하고 기존 파일을 복구합니다.'
+        Register-NewPatchContainers $tx
         Undo-InstallTransaction $tx
         throw ("설치에 실패해 기존 파일을 복구했습니다. {0} 백업: {1}" -f $originalError.Exception.Message, $tx.Backup)
     }

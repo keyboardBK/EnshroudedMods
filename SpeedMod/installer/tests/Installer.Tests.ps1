@@ -31,7 +31,8 @@ function New-Fixture {
     New-Item -ItemType Directory -Force -Path $root, $pkg, $depsDir | Out-Null
     Copy-Item -Path (Join-Path $Package '*') -Destination $pkg -Recurse
     Write-TestFile (Join-Path $root 'enshrouded.exe') 'known test executable'
-    Write-TestFile (Join-Path $root 'enshrouded.kfc') 'original kfc'
+    $originalKfc = 'KFC4' + (([string][char]0) * 24) + [char]1 + (([string][char]0) * 3) + 'original kfc'
+    Write-TestFile (Join-Path $root 'enshrouded.kfc') $originalKfc
     Write-TestFile (Join-Path $root 'enshrouded.kfc_resources') 'original resources'
     Write-TestFile (Join-Path $root '.cache\files.json') 'original cache'
     Write-TestFile (Join-Path $root '.cache\types.json') 'original types'
@@ -53,7 +54,7 @@ function New-Fixture {
     [IO.Compression.ZipFile]::CreateFromDirectory($zipRoot, $zip)
     $deps.emf_zip.sha256 = Get-Sha256Hex $zip
     [IO.File]::WriteAllText((Join-Path $pkg 'backend\dependencies.json'), ($deps | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
-    return @{ Game = $root; Package = $pkg; Dependencies = $depsDir; Specs = $deps; Scratch = (Join-Path $work ('s' + $script:fixtureNumber)) }
+    return @{ Game = $root; Package = $pkg; Dependencies = $depsDir; Specs = $deps; OriginalKfc = $originalKfc; Scratch = (Join-Path $work ('s' + $script:fixtureNumber)) }
 }
 function Install-Fixture($Fixture, [scriptblock]$Injector = $null) {
     $plan = Get-InstallPlan $Fixture.Game $Fixture.Package
@@ -61,7 +62,7 @@ function Install-Fixture($Fixture, [scriptblock]$Injector = $null) {
     Invoke-SpeedModInstall $plan $Fixture.Scratch $Fixture.Dependencies $true $Injector
 }
 function Assert-Originals($Fixture) {
-    Assert-True ([IO.File]::ReadAllText((Join-Path $Fixture.Game 'enshrouded.kfc')) -eq 'original kfc') 'KFC rollback'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $Fixture.Game 'enshrouded.kfc')) -eq $Fixture.OriginalKfc) 'KFC rollback'
     Assert-True ([IO.File]::ReadAllText((Join-Path $Fixture.Game 'enshrouded.kfc_resources')) -eq 'original resources') 'resource rollback'
     Assert-True ([IO.File]::ReadAllText((Join-Path $Fixture.Game '.cache\files.json')) -eq 'original cache') 'cache rollback'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $Fixture.Game 'enshrouded.kfc.bak'))) 'new KFC backup removed on rollback'
@@ -73,7 +74,7 @@ Assert-True $result.success 'fresh install'
 $chain = @(Get-ChainEntries $fresh.Game)
 Assert-True ($chain.Count -eq 2 -and $chain[0] -eq 'speedmod_bootstrap.dll' -and $chain[1] -eq 'speedmod_eml.dll') 'canonical startup order'
 Assert-True ((Get-Sha256Hex (Join-Path $fresh.Game 'speedmod_eml.dll')) -eq $fresh.Specs.eml_dll.sha256) 'verified EML copied'
-Assert-True ([IO.File]::ReadAllText((Join-Path $fresh.Game 'enshrouded.kfc')) -eq 'original kfc-patched') 'patcher was run'
+Assert-True ([IO.File]::ReadAllText((Join-Path $fresh.Game 'enshrouded.kfc')) -eq ($fresh.OriginalKfc + '-patched')) 'patcher was run'
 Assert-True (Test-Path -LiteralPath (Join-Path $result.backup 'files\enshrouded.kfc')) 'backup retained'
 Write-Output 'PASS fresh install, dependency extraction, startup order, patch generation, backups'
 
@@ -160,4 +161,68 @@ Assert-True ($result.save_files_backed_up -gt 0) 'character save found'
 Assert-True ((Get-Sha256Hex $save) -eq $saveHash) 'save source untouched'
 Assert-True ((Get-Sha256Hex (Join-Path $result.backup 'saves\steam\123\character0.ksd')) -eq $saveHash) 'save copied byte-exactly'
 Write-Output 'PASS saves copied and verified without changing originals'
+
+function Remove-Fixture($Fixture, [scriptblock]$Injector = $null) {
+    $plan = Get-SpeedModRemovalPlan $Fixture.Game $Fixture.Package $true
+    Invoke-SpeedModRemove $plan $Fixture.Scratch $Fixture.Dependencies $true $Injector
+}
+function Get-FixtureHashes([string]$Root) {
+    $hashes = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse -Force) {
+        $name = $file.FullName.Substring($Root.Length + 1)
+        if (-not $name.StartsWith('SpeedModInstaller\backups\')) { $hashes[$name] = Get-Sha256Hex $file.FullName }
+    }
+    return $hashes
+}
+function Assert-FixtureHashes($Before, $After) {
+    Assert-True ($Before.Count -eq $After.Count) 'rollback leaves the exact same file set'
+    foreach ($key in $Before.Keys) { Assert-True ($Before[$key] -eq $After[$key]) ('rollback byte identity: ' + $key) }
+}
+$remove = New-Fixture
+$null = Install-Fixture $remove
+Write-TestFile (Join-Path $remove.Game 'dinput8-chain.ini') "[Chain]`r`nspeedmod_bootstrap.dll`r`nspeedmod_eml.dll`r`nother.dll`r`n; keep me`r`n[Other]`r`nspeedmod_bootstrap.dll`r`n"
+Write-TestFile (Join-Path $remove.Game 'mods\Other\mod.json') '{"id":"Other"}'
+Write-TestFile (Join-Path $remove.Game 'mods\Other\src\mod.lua') 'other patch'
+Write-TestFile (Join-Path $remove.Game 'emf\mods\other\config.ini') 'other runtime'
+Write-TestFile (Join-Path $remove.Game 'mods\SpeedMod\src\config.lua') 'custom own setting'
+# Removal must also work with an independently updated EMF; do not touch its files.
+Write-TestFile (Join-Path $remove.Game 'emf\emf_core.dll') 'updated EMF preserve me'
+$before = Get-FixtureHashes $remove.Game
+Assert-Throws { Get-SpeedModRemovalPlan $remove.Game $remove.Package $false } 'no removal without explicit item restoration acknowledgement'
+Assert-FixtureHashes $before (Get-FixtureHashes $remove.Game)
+$removed = Remove-Fixture $remove
+Assert-True $removed.removed 'remove succeeded'
+foreach ($name in @('mods\SpeedMod', 'emf\mods\speedmod_boots', 'speedmod_bootstrap.dll')) {
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $remove.Game $name))) ('own content removed: ' + $name)
+}
+foreach ($name in @('dinput8.dll', 'speedmod_eml.dll', 'emf\emf_core.dll', 'mods\Other\mod.json', 'mods\Other\src\mod.lua', 'emf\mods\other\config.ini', 'enshrouded.exe')) {
+    Assert-True ($before[$name] -eq (Get-Sha256Hex (Join-Path $remove.Game $name))) ('shared or unrelated file preserved: ' + $name)
+}
+$expectedChain = "[Chain]`r`nspeedmod_eml.dll`r`nother.dll`r`n; keep me`r`n[Other]`r`nspeedmod_bootstrap.dll`r`n"
+Assert-True ([IO.File]::ReadAllText((Join-Path $remove.Game 'dinput8-chain.ini')) -eq $expectedChain) 'remove only own active bootstrap entry'
+Assert-True (Test-Path -LiteralPath (Join-Path $removed.backup 'files\mods\SpeedMod\src\config.lua')) 'own custom config backed up'
+Assert-True ([IO.File]::ReadAllText((Join-Path $remove.Game 'enshrouded.kfc')).EndsWith('-patched-patched')) 'remaining data mods repatched'
+Assert-True ((Get-Sha256Hex $save) -eq $saveHash) 'remove never changes saves'
+Write-Output 'PASS removal requires restoration acknowledgement and preserves EML, updated EMF, other mods, other chain sections and saves'
+
+foreach ($stage in @('after-files', 'after-patch', 'patcher-error')) {
+    $fixture = New-Fixture
+    $null = Install-Fixture $fixture
+    Write-TestFile (Join-Path $fixture.Game 'enshrouded_001.dat') 'existing other mod container'
+    Write-TestFile (Join-Path $fixture.Game 'write-container-test') 'yes'
+    if ($stage -eq 'patcher-error') { Write-TestFile (Join-Path $fixture.Game 'fail-patch-test') 'yes' }
+    $before = Get-FixtureHashes $fixture.Game
+    $script:failureStage = $stage
+    Assert-Throws { Remove-Fixture $fixture { param($at) if ($at -eq $script:failureStage) { throw 'injected removal failure' } } } 'removal rollback trigger'
+    Assert-FixtureHashes $before (Get-FixtureHashes $fixture.Game)
+}
+Write-Output 'PASS removal failure restores complete mod folders/config, chain, data/cache and overwritten other-mod containers; new containers removed'
+
+$mismatch = New-Fixture
+$null = Install-Fixture $mismatch
+Write-TestFile (Join-Path $mismatch.Game 'mods\SpeedMod\mod.json') '{"id":"SomeoneElse"}'
+$before = Get-FixtureHashes $mismatch.Game
+Assert-Throws { Remove-Fixture $mismatch } 'unrelated mod in own folder is refused'
+Assert-FixtureHashes $before (Get-FixtureHashes $mismatch.Game)
+Write-Output 'PASS conflicting mod identity rejected without writes'
 Write-Output ('ALL INSTALLER TESTS PASSED: ' + $work)

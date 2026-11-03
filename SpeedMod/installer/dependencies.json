@@ -1,6 +1,6 @@
 {
   "mod_version": "0.2.1-alpha",
-  "installer_version": "1.0.0",
+  "installer_version": "1.1.0",
   "game_sha256": "0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6",
   "eml_dll": {
     "file": "eml-dinput8.dll",

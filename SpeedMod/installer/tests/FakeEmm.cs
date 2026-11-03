@@ -12,6 +12,10 @@ internal static class FakeEmm {
         File.AppendAllText(Path.Combine(root, "enshrouded.kfc_resources"), "-patched");
         Directory.CreateDirectory(Path.Combine(root, ".cache"));
         File.WriteAllText(Path.Combine(root, ".cache", "files.json"), "new cache");
+        if (File.Exists(Path.Combine(root, "write-container-test"))) {
+            File.WriteAllText(Path.Combine(root, "enshrouded_001.dat"), "other mod overwritten by patch");
+            File.WriteAllText(Path.Combine(root, "enshrouded_002.dat"), "new extra container");
+        }
         if (File.Exists(Path.Combine(root, "fail-patch-test"))) return 23;
         Console.WriteLine("Fake EML patch succeeded (test only).");
         return 0;

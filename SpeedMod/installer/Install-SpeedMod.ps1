@@ -4,6 +4,8 @@
     [string]$Report = '',
     [string]$DependencyDirectory = '',
     [switch]$CheckOnly,
+    [switch]$Remove,
+    [switch]$ItemsRestored,
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
@@ -21,13 +23,15 @@ try {
     try { $owned = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
     if (-not $owned) { throw '다른 SpeedMod 설치가 진행 중입니다.' }
     Write-InstallStatus 1 '게임 버전과 설치 폴더를 확인합니다.'
-    $plan = Get-InstallPlan $root $Package
+    if ($Remove -and $CheckOnly) { throw '검사와 제거 옵션은 함께 사용할 수 없습니다.' }
+    $plan = if ($Remove) { Get-SpeedModRemovalPlan $root $Package ([bool]$ItemsRestored) } else { Get-InstallPlan $root $Package }
     if ($CheckOnly) {
         $result = [pscustomobject]@{ success = $true; check_only = $true; game = $root; version = $plan.Manifest.Dependencies.mod_version; required_bytes = $plan.RequiredBytes }
     } else {
         $scratch = Join-Path $Package 'work'
         New-Item -ItemType Directory -Force -Path $scratch | Out-Null
-        $result = Invoke-SpeedModInstall $plan $scratch $DependencyDirectory ([bool]$Offline)
+        $result = if ($Remove) { Invoke-SpeedModRemove $plan $scratch $DependencyDirectory ([bool]$Offline) }
+                  else { Invoke-SpeedModInstall $plan $scratch $DependencyDirectory ([bool]$Offline) }
     }
 } catch {
     $exitCode = 1
