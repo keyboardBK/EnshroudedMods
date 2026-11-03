@@ -1,4 +1,14 @@
-# EnshroudedMods — SpeedMod 0.2.1 alpha — 랜덤 버전 개발 브랜치
+# SpeedMod 아이템 저장 데이터 실험 — experiment/boots-metadata
+
+**새 실험 코드는 [Experiments/BootLab](Experiments/BootLab/README.md)에 있습니다.** 기존 SpeedMod 폴더와 아래 설치 EXE는 비교 기준인 0.2.1 랜덤 버전이며, 새 실험을 설치하지 않습니다.
+
+이 브랜치는 독립 시험용입니다. [계산형](https://github.com/keyboardBK/EnshroudedMods/tree/experiment/boots-formula/Experiments/BootLab) · [외부 저장형](https://github.com/keyboardBK/EnshroudedMods/tree/experiment/boots-ledger/Experiments/BootLab) · [아이템 데이터형](https://github.com/keyboardBK/EnshroudedMods/tree/experiment/boots-metadata/Experiments/BootLab)
+
+배포 ZIP은 해당 실험의 distribution 폴더에 있으며, 실제 월드·저장·멀티플레이 검증을 완료한 배포판이 아닙니다. 기존 변형 신발이 있는 실제 캐릭터에 바로 교체하지 마세요.
+
+---
+
+# 비교 기준: SpeedMod 0.2.1 랜덤 버전
 
 신발의 **실제 아이템 레벨·등급**으로 추가 질주속도를 한 번 추첨합니다. 플레이어 레벨은 사용하지 않습니다.
 기존 보유품, 제작품, 드롭품 모두 서버에서 처음 확인될 때 대상이며 외형 신발은 제외합니다.

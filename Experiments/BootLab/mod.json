@@ -1,0 +1,11 @@
+{
+  "id": "speedmod_metadata",
+  "name": "SpeedMod experiment: Read-only item metadata probe",
+  "version": "0.0.1",
+  "description": "Experimental branch. See Experiments/BootLab/README.md. Not the 0.2.1 installer.",
+  "authors": [
+    "KeyboardBK"
+  ],
+  "emf": 16,
+  "side": "both"
+}
