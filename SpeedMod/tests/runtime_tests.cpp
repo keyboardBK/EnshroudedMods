@@ -75,6 +75,14 @@ void apply(){apply_changes(reinterpret_cast<void*>(1),nullptr);}
 void advance(){now+=1000000000LL;scan();apply();}
 }
 int main() {
+    uint8_t instruction[sizeof(speedmod::kOriginalHeapInit)];
+    std::memcpy(instruction,speedmod::kOriginalHeapInit,sizeof(instruction));
+    assert(speedmod::heap_instruction_matches(instruction));
+    assert(!speedmod::heap_instruction_matches(instruction,true));
+    std::memcpy(instruction+7,&speedmod::kResourceHeapBytes,sizeof(speedmod::kResourceHeapBytes));
+    assert(speedmod::heap_instruction_matches(instruction,true));
+    assert(!speedmod::heap_instruction_matches(instruction));
+    instruction[3]^=1;assert(!speedmod::heap_instruction_matches(instruction,true));
     speedmod::Settings s;assert(s.valid());
     assert(s.range(1,0).min==1 && s.range(1,0).max==5);
     assert(s.range(45,0).min==10 && s.range(45,0).max==15);

@@ -32,29 +32,35 @@ end
 assert(validated, "Player Movement missing")
 local registry = game.assets.get_resources_by_type("keen::ItemRegistryResource")[1].data
 local registered, ids, originals, plan = {}, {}, {}, {}
-for _, guid in ipairs(registry.itemRefs) do registered[tostring(guid)] = true end
+for i, guid in ipairs(registry.itemRefs) do registered[tostring(guid)] = tostring(registry.dbgNames[i]) end
 local function variant_name(base_id, bonus) return string.format("SM02_Boot_%08x_P%03d", base_id, bonus) end
 local all_items = game.assets.get_resources_by_type("keen::ItemInfo")
-for _, r in ipairs(all_items) do ids[r.data.itemId.value] = tostring(r.data.objectId) end
+for _, r in ipairs(all_items) do ids[game.guid.hash(r.guid)] = tostring(r.guid) end
+-- Read GUID metadata for collision checks. Reading every ItemInfo.data causes EML to
+-- serialize thousands of untouched items, which wastes the fixed resource arena.
+-- All registered gameplay boots in this build have "boot" in the registry name.
 -- Preflight all IDs/icons before mutation: a hash collision must never alias an item.
 for _, r in ipairs(all_items) do
-    local d, vanity = r.data, false
-    for _, flag in ipairs(d.flags) do if flag == "IsVanityItem" then vanity = true end end
-    if d.equipment.slot == "Armour_Feet" and registered[tostring(d.objectId)] and
-       not vanity and not d.debugName:match("^SM02_") then
-        local icon = resource(d.objectId, "keen::UiTextureResource")
-        for _, c in ipairs(d.impactValues.scaled) do
-            assert(c.value.configId.value ~= sprint_id, "Scaled Sprint unsupported: " .. d.debugName)
-        end
-        originals[#originals + 1] = { resource = r, before = binary("keen::ItemInfo", d):to_string() }
-        for bonus = 0, 100 do
-            local guid = string.format("%08x-%04x-5d02-a200-%s", d.itemId.value, bonus, tostring(d.objectId):sub(-12))
-            local id = game.guid.hash(guid)
-            assert(not ids[id] or ids[id] == guid, "ItemId collision: " .. guid)
-            ids[id] = guid
-            local existing = game.assets.get_resource(guid, "keen::ItemInfo", 0)
-            assert(not existing or existing.data.debugName == variant_name(d.itemId.value, bonus), "Variant GUID collision")
-            plan[#plan + 1] = { source = r, icon = icon, guid = guid, id = id, bonus = bonus }
+    local registry_name = registered[tostring(r.guid)]
+    if registry_name and registry_name:lower():find("boot", 1, true) then
+        local d, vanity = r.data, false
+        for _, flag in ipairs(d.flags) do if flag == "IsVanityItem" then vanity = true end end
+        if d.equipment.slot == "Armour_Feet" and registered[tostring(d.objectId)] and
+           not vanity and not d.debugName:match("^SM02_") then
+            local icon = resource(d.objectId, "keen::UiTextureResource")
+            for _, c in ipairs(d.impactValues.scaled) do
+                assert(c.value.configId.value ~= sprint_id, "Scaled Sprint unsupported: " .. d.debugName)
+            end
+            originals[#originals + 1] = { resource = r, before = binary("keen::ItemInfo", d):to_string() }
+            for bonus = 0, 100 do
+                local guid = string.format("%08x-%04x-5d02-a200-%s", d.itemId.value, bonus, tostring(d.objectId):sub(-12))
+                local id = game.guid.hash(guid)
+                assert(not ids[id] or ids[id] == guid, "ItemId collision: " .. guid)
+                ids[id] = guid
+                local existing = game.assets.get_resource(guid, "keen::ItemInfo", 0)
+                assert(not existing or existing.data.debugName == variant_name(d.itemId.value, bonus), "Variant GUID collision")
+                plan[#plan + 1] = { source = r, icon = icon, guid = guid, id = id, bonus = bonus }
+            end
         end
     end
 end
@@ -64,7 +70,7 @@ for plan_index, p in ipairs(plan) do
     local r = game.assets.get_resource(p.guid, "keen::ItemInfo", 0)
     if r then r.data = src else r = game.assets.create_resource(src, "keen::ItemInfo", p.guid, 0) end
     local d = r.data
-    d.itemId = { value = p.id }; d.objectId = p.guid
+    d.itemId = { value = p.id }; d.objectId = src.objectId -- native UI texture lookup reuses the base icon
     d.debugName = variant_name(src.itemId.value, p.bonus)
     local sprint
     for _, c in ipairs(d.impactValues.simple) do if c.value.configId.value == sprint_id then sprint = c end end
@@ -77,8 +83,6 @@ for plan_index, p in ipairs(plan) do
     for _, u in ipairs(d.uiValues) do if u.locaId.value == sprint_loca then ui = u end end
     if not ui then table.insert(d.uiValues, ui_donor); ui = d.uiValues[#d.uiValues]; ui.value = 0 end
     ui.value = ui.value + p.bonus
-    local texture = game.assets.get_resource(p.guid, "keen::UiTextureResource", 0)
-    if texture then texture.data = p.icon.data else game.assets.create_resource(p.icon.data, "keen::UiTextureResource", p.guid, 0) end
     if not registered[p.guid] then
         table.insert(registry.itemRefs, p.guid); table.insert(registry.dbgNames, d.debugName); registered[p.guid] = true
     end
@@ -106,6 +110,6 @@ end
 for _, o in ipairs(originals) do assert(binary("keen::ItemInfo", o.resource.data):to_string() == o.before, "Vanilla item changed") end
 if loader.features.export then
     io.export("speedmod/variants.csv", table.concat(csv, "\n") .. "\n")
-    io.export("speedmod/validation.txt", string.format("SpeedMod 0.2.0: %d boots, %d variants. Originals unchanged.\n", #originals, #plan))
+    io.export("speedmod/validation.txt", string.format("SpeedMod 0.2.1: %d boots, %d variants. Originals unchanged.\n", #originals, #plan))
 end
 print(string.format("[SpeedMod] Prepared %d persistent variants from %d boots (0..100%%).", #plan, #originals))

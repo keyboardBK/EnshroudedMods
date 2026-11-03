@@ -49,19 +49,29 @@ def validate(original_dir, patched_dir, variants_csv):
         v = variants[int(row["variant_id"], 16)]
         bonus = int(row["bonus_percent"])
         assert v["debugName"] == f"SM02_Boot_{base_id:08x}_P{bonus:03d}"
-        assert v["objectId"] == row["variant_guid"]
+        assert v["$guid"] == row["variant_guid"]
+        assert v["objectId"] == base["objectId"], "Native UI must reuse the original icon GUID"
+        assert row["variant_guid"] not in icons, "Duplicate variant icon wastes the native UI table"
         assert v["objectId"] in icons
-        assert {k: x for k, x in icons[v["objectId"]].items() if k != "$guid"} == {
-            k: x for k, x in icons[base["objectId"]].items() if k != "$guid"}
-        assert registered[v["objectId"]] == v["debugName"]
+        assert registered[row["variant_guid"]] == v["debugName"]
         assert base["objectId"] in registered, "Unregistered legacy source boot"
         assert abs(sprint(v) - sprint(base) - 8 * bonus / 100) < 0.00001
         assert ui(v) == ui(base) + bonus
+        def other_configs(d):
+            return [c for c in d["impactValues"]["simple"]
+                    if c["$value"]["configId"]["value"] != 345127019]
+        assert other_configs(v) == other_configs(base)
+        assert v["impactValues"]["scaled"] == base["impactValues"]["scaled"]
+        assert [u for u in v["uiValues"] if u["locaId"]["value"] != 3180863901] == [
+            u for u in base["uiValues"] if u["locaId"]["value"] != 3180863901]
         assert {k: x for k, x in v.items() if k not in changed_fields} == {
             k: x for k, x in base.items() if k not in changed_fields}
         counts.setdefault(base_id, set()).add(bonus)
     assert all(bonuses == set(range(101)) for bonuses in counts.values())
-    return {"version": "0.2.0-alpha", "build": 1283531,
+    expected_boots = {i for i, d in by_base.items() if d["objectId"] in registered
+                      and d["equipment"]["slot"] == "Armour_Feet" and "IsVanityItem" not in d["flags"]}
+    assert set(counts) == expected_boots, "A registered gameplay boot was omitted"
+    return {"version": "0.2.1-alpha", "build": 1283531,
             "original_item_definitions_unchanged": len(original),
             "registered_boots": len(counts), "persistent_variants_verified": len(rows),
             "icons_registry_and_native_sprint_tooltip_verified": True,

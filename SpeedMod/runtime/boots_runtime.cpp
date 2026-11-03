@@ -13,6 +13,7 @@
 #include "emf/emf_api.h"
 #include "emf/generated/components.hpp"
 #include "boots_logic.h"
+#include "resource_heap.h"
 namespace {
 namespace ecs=emf::gen::ecs;
 constexpr const char* kId="speedmod_boots";
@@ -167,7 +168,7 @@ void tick(EmfWorld* w,void*) {
     }
 }
 void status(EmfWorld*,int,const char* const*,void*) {
-    api->command_reply("SpeedMod 0.2.0: %s, conversions=%llu. Existing variants never reroll. Live save/multiplayer tests pending.",restore_mode.load()?"RESTORE":"ROLL",static_cast<unsigned long long>(changed.load()));
+    api->command_reply("SpeedMod 0.2.1: %s, conversions=%llu. Existing variants never reroll. Live save/multiplayer tests pending.",restore_mode.load()?"RESTORE":"ROLL",static_cast<unsigned long long>(changed.load()));
 }
 void restore(EmfWorld*,int,const char* const*,void*) {
     restore_mode=true;
@@ -188,6 +189,21 @@ bool load_settings() {
     }
     return settings.valid();
 }
+bool prepare_resource_heap(const EmfGameBuild& build) {
+    // This is a process-memory patch only. Never change the executable on disk.
+    // Verify the early chain bootstrap ran against the exact supported executable.
+    if(build.server || std::strcmp(build.sha256,"0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6")!=0) {
+        api->log(kId,"Resource heap fix: unsupported executable; no code changed.");return false;
+    }
+    auto* code=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr))+speedmod::kHeapInitRva;
+    MEMORY_BASIC_INFORMATION arena{};
+    if(!VirtualQuery(reinterpret_cast<void*>(0x20000000000ULL),&arena,sizeof(arena)) ||
+       !speedmod::heap_instruction_matches(code,true) ||
+       (arena.State==MEM_COMMIT && arena.RegionSize<speedmod::kResourceHeapBytes)) {
+        api->log(kId,"Resource heap bootstrap missing/late. Add speedmod_bootstrap.dll BEFORE speedmod_eml.dll in dinput8-chain.ini.");return false;
+    }
+    api->log(kId,"Verified startup bootstrap: resource heap 768 MiB (shared original UI icons).");return true;
+}
 }
 extern "C" __declspec(dllexport) bool emf_mod_load(const EmfApi* incoming) {
     if(!incoming || incoming->version<16 || incoming->size<offsetof(EmfApi,program_write_other)+sizeof(incoming->program_write_other) ||
@@ -195,6 +211,7 @@ extern "C" __declspec(dllexport) bool emf_mod_load(const EmfApi* incoming) {
     EmfGameBuild build{};build.size=sizeof(build);
     if(!incoming->game_build(&build) || !build.known || build.number!=1283531)return false;
     api=incoming;
+    if(!prepare_resource_heap(build))return false;
     if(!load_settings()) {api->log(kId,"Missing/invalid config.ini; refusing conversions");return false;}
     try {std::random_device seed;rng.seed((uint64_t(seed())<<32)^seed());}catch(...) {return false;}
     static const char* reads[]={"Inventory","UsedItem","ItemState","Level","PerkContainerNew","SlotSelection",nullptr};
@@ -207,5 +224,5 @@ extern "C" __declspec(dllexport) bool emf_mod_load(const EmfApi* incoming) {
     api->on_tick(tick,nullptr);
     api->register_command("speedmod_boots.status",": show roll mode",status,nullptr);
     api->register_command("speedmod_boots.restore",": restore LOADED shoes before uninstall",restore,nullptr);
-    api->log(kId,"Loaded 0.2.0: persistent level/rarity rolls. Requires matching EML data on ALL peers.");return true;
+    api->log(kId,"Loaded 0.2.1: persistent level/rarity rolls. Requires matching EML data on ALL peers.");return true;
 }

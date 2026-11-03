@@ -1,7 +1,7 @@
 {
   "id": "speedmod_boots",
   "name": "SpeedMod - Persistent Boot Rolls",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ALPHA: one-time level/rarity sprint rolls saved as stable item IDs. Matching EML data required on all peers. Live multiplayer/save tests pending.",
   "authors": [
     "KeyboardBK"
