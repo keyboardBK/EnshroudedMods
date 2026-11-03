@@ -1,0 +1,11 @@
+{
+  "id": "speedmod_ledger",
+  "name": "SpeedMod experiment: Per-item sidecar ledger",
+  "version": "0.0.1",
+  "description": "Experimental branch. See Experiments/BootLab/README.md. Not the 0.2.1 installer.",
+  "authors": [
+    "KeyboardBK"
+  ],
+  "emf": 16,
+  "side": "both"
+}
