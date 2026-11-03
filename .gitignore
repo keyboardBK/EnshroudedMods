@@ -6,6 +6,7 @@
 *.pdb
 *.dll
 *.exe
+!SpeedMod/distribution/SpeedMod-Setup-*.exe
 *.lib
 *.exp
 *.zip

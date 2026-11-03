@@ -1,0 +1,38 @@
+{
+  "mod_version": "0.2.1-alpha",
+  "installer_version": "1.0.0",
+  "game_sha256": "0403981fd2e8ad18bd8c5698dff03c8d505b5a46677832c496db9c645513f2a6",
+  "eml_dll": {
+    "file": "eml-dinput8.dll",
+    "url": "https://github.com/Brabb3l/kfc-parser/releases/download/v0.2.0/dinput8.dll",
+    "sha256": "1ff5334c46ab635ab7602701e2d63f32447bc4b258e942d85b2c0273b8457e2e"
+  },
+  "eml_cli": {
+    "file": "emm.exe",
+    "url": "https://github.com/Brabb3l/kfc-parser/releases/download/v0.2.0/emm.exe",
+    "sha256": "b1133f6b8ea7000596cc7710901bd8307b48165b0e650c0487a611d90ea49305"
+  },
+  "emf_zip": {
+    "file": "EMF-0.3.5-manual.zip",
+    "url": "https://github.com/matenm/emf-enshrouded/releases/download/v0.3.5/EMF-0.3.5-manual.zip",
+    "sha256": "004bb91e3aed26b8b98ba021038733f40a573d9ac8644933f02a81546663b543"
+  },
+  "emf_files": [
+    {
+      "path": "dinput8.dll",
+      "sha256": "ac2a031d87e5273de9741ec7384c253a6634f08cdc331aa2c4a976b47828447b"
+    },
+    {
+      "path": "emf/emf_core.dll",
+      "sha256": "8e7b969ee5b165f65ec8d9e827f922b513e4ccedde44136ab83bad94ede0c321"
+    },
+    {
+      "path": "emf/known_tools.txt",
+      "sha256": "5fd8beee4eeaeb0390a383d13b87f29df0381fea17bc90d8ddc5b7a5a69d3224"
+    },
+    {
+      "path": "emf/vk/VkLayer_EMF_console.json",
+      "sha256": "77a1b301a33e11205ba5f7b51062e096ce5651572fcbf8a4d1532f5bac92d4bc"
+    }
+  ]
+}

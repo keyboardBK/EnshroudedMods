@@ -4,6 +4,14 @@
 기존 보유품, 제작품, 드롭품 모두 서버에서 처음 확인될 때 대상이며 외형 신발은 제외합니다.
 기존 질주 옵션은 보존하고 보너스를 더합니다. 기본 아이템 툴팁에도 합산 수치가 들어갑니다.
 
+## 쉬운 설치
+
+**[Windows 설치 EXE 다운로드](https://github.com/keyboardBK/EnshroudedMods/raw/refs/heads/feature/random-boot-sprint/SpeedMod/distribution/SpeedMod-Setup-0.2.1.exe)** → 게임 종료 → 게임 폴더 확인 → **설치 / 업데이트**.
+
+모드 데이터와 DLL이 포함돼 있고 EML·EMF는 공식 배포처에서 자동으로 받아 검증합니다. 처음 설치할 때 인터넷이 필요할 수 있습니다. Windows 10/11, 게임 클라이언트 빌드 1283531용 개발 버전입니다. 호스트와 참가자 모두 같은 설치 파일을 사용합니다.
+
+[설치기 동작·검증·빌드 안내](docs/installer.md)
+
 ## 기본 범위
 
 단위는 추가 질주속도 %이며 양끝을 포함하는 균등 정수 추첨입니다.
