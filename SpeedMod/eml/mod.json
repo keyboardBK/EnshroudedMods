@@ -1,7 +1,7 @@
 {
   "id": "SpeedMod",
   "name": "SpeedMod",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "capabilities": [
     "patch",
     "export"
@@ -10,7 +10,7 @@
   "authors": [
     "KeyboardBK"
   ],
-  "description": "Boot rarity sprint bonuses: EML effect resources for the SpeedMod EMF runtime companion.",
+  "description": "Persistent level/rarity boot sprint variants with native stats and tooltips. Requires SpeedMod EMF runtime.",
   "license": null,
   "icon": null
 }

@@ -1,154 +1,111 @@
--- EML creates transient, native equipment effects. The EMF companion chooses
--- one from the ACTUAL equipped item's rarity, including random loot.
--- ItemInfo.rarity is deliberately never used to choose a runtime bonus.
-local percentages = require("config")
-local rarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
-local template_guids = {
-    "4fb629d0-15bc-5fc1-a1e6-f9bca873bf01",
-    "4fb629d0-15bc-5fc1-a1e6-f9bca873bf02",
-    "4fb629d0-15bc-5fc1-a1e6-f9bca873bf03",
-    "4fb629d0-15bc-5fc1-a1e6-f9bca873bf04",
-    "4fb629d0-15bc-5fc1-a1e6-f9bca873bf05",
-}
-local sprint_config_id = 345127019
-local native_template_guid = "7100f7c2-480f-44da-a354-91c08786011b"
-local player_guid = "c3db66d6-89a5-4a6c-a8e3-d9a1f6009812"
-local donor_guid = "e8ea3195-02d8-4a8e-bbd5-4a578f2d67db"
-
-local function fail(message)
-    error("[SpeedMod] " .. message)
+-- Variant GUIDs are a permanent save format; NEVER change them after release.
+local sprint_id, sprint_loca = 345127019, 3180863901
+local function resource(guid, kind)
+    return assert(game.assets.get_resource(guid, kind, 0), kind .. " missing: " .. tostring(guid))
 end
-
-local function resource(guid, type_name)
-    local found = game.assets.get_resource(guid, type_name, 0)
-    if not found then fail("Required resource missing: " .. type_name .. " " .. guid) end
-    return found
+local function binary(kind, data)
+    local b = buffer.create(); b:write_resource(kind, data); return b
 end
-
-local function find_component(template, type_name)
-    for _, component in ipairs(template.components) do
-        if component.type == type_name then return component.value end
+local donor = resource("e8ea3195-02d8-4a8e-bbd5-4a578f2d67db", "keen::ItemInfo").data
+local config_donor, ui_donor
+for _, c in ipairs(donor.impactValues.simple) do
+    if c.value.configId.value == sprint_id then config_donor = c end
+end
+for _, u in ipairs(donor.uiValues) do
+    if u.locaId.value == sprint_loca then ui_donor = u end
+end
+assert(config_donor and ui_donor, "Native sprint config/tooltip missing")
+local base_speed, index = 8, nil
+local player = resource("c3db66d6-89a5-4a6c-a8e3-d9a1f6009812", "keen::ecs::TemplateResource").data
+for _, r in ipairs(game.assets.get_resources_by_type("keen::AttributeContainerResource")) do
+    for _, group in ipairs(r.data.attributes) do
+        for i, name in ipairs(group.debugNames) do if name == "Movement_Sprint" then index = i end end
     end
-    fail("Required component missing: " .. type_name)
 end
-
-local native = resource(native_template_guid, "keen::ecs::TemplateResource")
-local function binary(type_name, data)
-    local result = buffer.create()
-    result:write_resource(type_name, data)
-    return result:to_string()
+assert(index, "Movement_Sprint missing")
+local validated = false
+for _, c in ipairs(player.components) do
+    if c.type == "keen::ecs::Movement" then
+        assert(c.value.dataStorage[index] == base_speed, "Sprint base changed"); validated = true
+    end
 end
-local native_before = binary("keen::ecs::TemplateResource", native.data)
-local native_config = find_component(native.data, "keen::ecs::ImpactConfiguration")
-local impact = find_component(native.data, "keen::ecs::Impact")
-local program = resource(impact.program, "keen::ImpactProgram")
-local has_native_sprint = false
-for _, entry in ipairs(program.data.dataLayout) do
-    if entry.configId.value == sprint_config_id then has_native_sprint = true end
-end
-if not has_native_sprint then fail("The native equipment program no longer supports Sprint config.") end
-
--- Find the sprint index from the registry, rather than guessing array indices.
-local sprint_index
-for _, container in ipairs(game.assets.get_resources_by_type("keen::AttributeContainerResource")) do
-    for _, group in ipairs(container.data.attributes) do
-        for index, name in ipairs(group.debugNames) do
-            if name == "Movement_Sprint" then
-                if sprint_index then fail("Ambiguous Movement_Sprint declaration.") end
-                sprint_index = index
-            end
+assert(validated, "Player Movement missing")
+local registry = game.assets.get_resources_by_type("keen::ItemRegistryResource")[1].data
+local registered, ids, originals, plan = {}, {}, {}, {}
+for _, guid in ipairs(registry.itemRefs) do registered[tostring(guid)] = true end
+local function variant_name(base_id, bonus) return string.format("SM02_Boot_%08x_P%03d", base_id, bonus) end
+local all_items = game.assets.get_resources_by_type("keen::ItemInfo")
+for _, r in ipairs(all_items) do ids[r.data.itemId.value] = tostring(r.data.objectId) end
+-- Preflight all IDs/icons before mutation: a hash collision must never alias an item.
+for _, r in ipairs(all_items) do
+    local d, vanity = r.data, false
+    for _, flag in ipairs(d.flags) do if flag == "IsVanityItem" then vanity = true end end
+    if d.equipment.slot == "Armour_Feet" and registered[tostring(d.objectId)] and
+       not vanity and not d.debugName:match("^SM02_") then
+        local icon = resource(d.objectId, "keen::UiTextureResource")
+        for _, c in ipairs(d.impactValues.scaled) do
+            assert(c.value.configId.value ~= sprint_id, "Scaled Sprint unsupported: " .. d.debugName)
+        end
+        originals[#originals + 1] = { resource = r, before = binary("keen::ItemInfo", d):to_string() }
+        for bonus = 0, 100 do
+            local guid = string.format("%08x-%04x-5d02-a200-%s", d.itemId.value, bonus, tostring(d.objectId):sub(-12))
+            local id = game.guid.hash(guid)
+            assert(not ids[id] or ids[id] == guid, "ItemId collision: " .. guid)
+            ids[id] = guid
+            local existing = game.assets.get_resource(guid, "keen::ItemInfo", 0)
+            assert(not existing or existing.data.debugName == variant_name(d.itemId.value, bonus), "Variant GUID collision")
+            plan[#plan + 1] = { source = r, icon = icon, guid = guid, id = id, bonus = bonus }
         end
     end
 end
-if not sprint_index then fail("Movement_Sprint declaration missing.") end
-local movement = find_component(resource(player_guid, "keen::ecs::TemplateResource").data, "keen::ecs::Movement")
-local base_speed = movement.dataStorage[sprint_index]
-if type(base_speed) ~= "number" or base_speed <= 0 or base_speed > 40 then
-    fail("Invalid base sprint speed; refusing to create effects.")
-end
-
-local donor = resource(donor_guid, "keen::ItemInfo")
-local donor_before = binary("keen::ItemInfo", donor.data)
-local sprint_variant
-for _, config in ipairs(donor.data.impactValues.simple) do
-    if config.value.configId.value == sprint_config_id then
-        if config.type ~= "keen::impact::FloatImpactConfig" then fail("Sprint config type changed.") end
-        sprint_variant = config
+local csv = { "base_id,bonus_percent,variant_id,variant_guid" }
+for plan_index, p in ipairs(plan) do
+    local src = p.source.data
+    local r = game.assets.get_resource(p.guid, "keen::ItemInfo", 0)
+    if r then r.data = src else r = game.assets.create_resource(src, "keen::ItemInfo", p.guid, 0) end
+    local d = r.data
+    d.itemId = { value = p.id }; d.objectId = p.guid
+    d.debugName = variant_name(src.itemId.value, p.bonus)
+    local sprint
+    for _, c in ipairs(d.impactValues.simple) do if c.value.configId.value == sprint_id then sprint = c end end
+    if not sprint then
+        table.insert(d.impactValues.simple, config_donor)
+        sprint = d.impactValues.simple[#d.impactValues.simple]; sprint.value.value = 0
     end
-end
-if not sprint_variant then fail("Native sprint configuration donor missing.") end
-for _, rarity in ipairs(rarities) do
-    local value = percentages[rarity]
-    if type(value) ~= "number" or value ~= value or value < 0 or value > 100 then
-        fail("Bonus for " .. rarity .. " must be a finite number between 0 and 100.")
+    sprint.value.value = sprint.value.value + base_speed * p.bonus / 100
+    local ui
+    for _, u in ipairs(d.uiValues) do if u.locaId.value == sprint_loca then ui = u end end
+    if not ui then table.insert(d.uiValues, ui_donor); ui = d.uiValues[#d.uiValues]; ui.value = 0 end
+    ui.value = ui.value + p.bonus
+    local texture = game.assets.get_resource(p.guid, "keen::UiTextureResource", 0)
+    if texture then texture.data = p.icon.data else game.assets.create_resource(p.icon.data, "keen::UiTextureResource", p.guid, 0) end
+    if not registered[p.guid] then
+        table.insert(registry.itemRefs, p.guid); table.insert(registry.dbgNames, d.debugName); registered[p.guid] = true
     end
-end
-for index, guid in ipairs(template_guids) do
-    local existing = game.assets.get_resource(guid, "keen::ecs::TemplateResource", 0)
-    if existing and existing.data.name ~= "SpeedMod_BootSprint_" .. rarities[index] then
-        fail("Effect GUID is owned by another resource: " .. guid)
+    local decoded = binary("keen::ItemInfo", d):read_resource("keen::ItemInfo")
+    assert(decoded.itemId.value == p.id and decoded.debugName == d.debugName, "Variant round-trip failed")
+    local checked_config, checked_ui = false, false
+    for _, c in ipairs(decoded.impactValues.simple) do
+        if c.value.configId.value == sprint_id then
+            assert(math.abs(c.value.value - sprint.value.value) < 0.00001, "Sprint round-trip failed")
+            checked_config = true
+        end
     end
-end
-
--- All validation above happens before changing resources. Only NEW resources
--- are written: no player template, existing item, perk, loot, or save is edited.
-local report = {
-    "SpeedMod 0.1.0 / EML resources",
-    "Game: " .. tostring(game.version),
-    "Base sprint speed: " .. tostring(base_speed),
-    "Actual equipped rarity selection requires the EMF runtime companion.",
-    "Existing item and perk definitions remain unchanged.",
-}
-local csv = { "rarity,bonus_percent,additive_speed,template_guid" }
-for index, rarity in ipairs(rarities) do
-    local effect = game.assets.get_resource(template_guids[index], "keen::ecs::TemplateResource", 0)
-    if effect then
-        effect.data = native.data -- reset our own resource, so reapplication never duplicates components
-    else
-        effect = game.assets.create_resource(native.data, "keen::ecs::TemplateResource", template_guids[index], 0)
+    for _, u in ipairs(decoded.uiValues) do
+        if u.locaId.value == sprint_loca then
+            assert(u.value == ui.value and not u.isScaled, "Tooltip round-trip failed")
+            checked_ui = true
+        end
     end
-    effect.data.name = "SpeedMod_BootSprint_" .. rarity
-    local configuration = find_component(effect.data, "keen::ecs::ImpactConfiguration")
-    -- Assigning a field makes a deep copy in EML. The donor stays untouched.
-    configuration.configValues.simple = { sprint_variant }
-    configuration.configValues.scaled = {}
-    local amount = base_speed * percentages[rarity] / 100
-    configuration.configValues.simple[1].value.value = amount
-
-    -- Native shutdown code undoes the bonus. Lifetime is a watchdog if the
-    -- runtime companion is disabled; its endOfLife is renewed while worn.
-    table.insert(effect.data.components, {
-        type = "keen::ecs::LifeTime",
-        value = {
-            lifeTime = { value = 1000000000 },
-            endOfLife = { value = 0 },
-            enforceDestroy = true,
-            preventDestroy = false,
-            triggeredDestroy = false,
-        },
-    })
-    local serialized = buffer.create()
-    serialized:write_resource("keen::ecs::TemplateResource", effect.data)
-    local decoded = serialized:read_resource("keen::ecs::TemplateResource")
-    local decoded_config = find_component(decoded, "keen::ecs::ImpactConfiguration")
-    if math.abs(decoded_config.configValues.simple[1].value.value - amount) > 0.00001 then
-        fail("Effect binary round-trip failed for " .. rarity)
-    end
-    -- Exercise the actual EML binary writer even in export-only validation.
-    if loader.features.export then
-        io.export("speedmod/effect_" .. rarity .. ".bin", serialized)
-    end
-    local line = string.format("%s: +%g%% (%g speed)", rarity, percentages[rarity], amount)
-    print("[SpeedMod] " .. line)
-    table.insert(report, line)
-    table.insert(csv, string.format("%s,%g,%.9g,%s", rarity, percentages[rarity], amount, template_guids[index]))
+    assert(checked_config and checked_ui, "Missing sprint config/tooltip")
+    table.insert(csv, string.format("%08x,%d,%08x,%s", src.itemId.value, p.bonus, p.id, p.guid))
+    -- The EML bridge uses auxiliary Lua references for reflected field proxies.
+    -- Release temporary proxies in batches when patching thousands of resources.
+    if plan_index % 32 == 0 then collectgarbage("collect") end
 end
-if binary("keen::ecs::TemplateResource", native.data) ~= native_before or
-   binary("keen::ItemInfo", donor.data) ~= donor_before then
-    fail("Unexpected mutation of a vanilla resource.")
-end
+for _, o in ipairs(originals) do assert(binary("keen::ItemInfo", o.resource.data):to_string() == o.before, "Vanilla item changed") end
 if loader.features.export then
-    io.export("speedmod/effects.csv", table.concat(csv, "\n") .. "\n")
-    io.export("speedmod/validation.txt", table.concat(report, "\n") .. "\n")
+    io.export("speedmod/variants.csv", table.concat(csv, "\n") .. "\n")
+    io.export("speedmod/validation.txt", string.format("SpeedMod 0.2.0: %d boots, %d variants. Originals unchanged.\n", #originals, #plan))
 end
-print("[SpeedMod] Prepared 5 native effects. Runtime companion required for gameplay bonuses.")
+print(string.format("[SpeedMod] Prepared %d persistent variants from %d boots (0..100%%).", #plan, #originals))

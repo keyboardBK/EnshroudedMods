@@ -1,9 +1,11 @@
 {
   "id": "speedmod_boots",
-  "name": "SpeedMod - Equipped Boot Rarity",
-  "version": "0.1.0",
-  "description": "ALPHA: actual equipped boot rarity selects a temporary native sprint bonus. Requires SpeedMod EML data. Live movement and multiplayer are unverified.",
-  "authors": ["KeyboardBK"],
-  "emf": 15,
+  "name": "SpeedMod - Persistent Boot Rolls",
+  "version": "0.2.0",
+  "description": "ALPHA: one-time level/rarity sprint rolls saved as stable item IDs. Matching EML data required on all peers. Live multiplayer/save tests pending.",
+  "authors": [
+    "KeyboardBK"
+  ],
+  "emf": 16,
   "side": "both"
 }

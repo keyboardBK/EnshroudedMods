@@ -1,181 +1,211 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "emf/emf_api.h"
 #include "emf/generated/components.hpp"
 #include "boots_logic.h"
-
 namespace {
-namespace ecs = emf::gen::ecs;
-constexpr const char* kId = "speedmod_boots";
-constexpr uint32_t kSupportedBuild = 1283531;
-// Windows GUID memory order, matching the EML helper.
-constexpr uint8_t kTemplates[5][16] = {
-    {0xd0,0x29,0xb6,0x4f,0xbc,0x15,0xc1,0x5f,0xa1,0xe6,0xf9,0xbc,0xa8,0x73,0xbf,0x01},
-    {0xd0,0x29,0xb6,0x4f,0xbc,0x15,0xc1,0x5f,0xa1,0xe6,0xf9,0xbc,0xa8,0x73,0xbf,0x02},
-    {0xd0,0x29,0xb6,0x4f,0xbc,0x15,0xc1,0x5f,0xa1,0xe6,0xf9,0xbc,0xa8,0x73,0xbf,0x03},
-    {0xd0,0x29,0xb6,0x4f,0xbc,0x15,0xc1,0x5f,0xa1,0xe6,0xf9,0xbc,0xa8,0x73,0xbf,0x04},
-    {0xd0,0x29,0xb6,0x4f,0xbc,0x15,0xc1,0x5f,0xa1,0xe6,0xf9,0xbc,0xa8,0x73,0xbf,0x05},
+namespace ecs=emf::gen::ecs;
+constexpr const char* kId="speedmod_boots";
+constexpr const char* kRegistry="g38_items::ItemRegistry";
+const EmfApi* api=nullptr;
+speedmod::Settings settings;
+std::mt19937_64 rng;
+struct Variant { uint32_t base; int bonus; };
+std::unordered_map<uint32_t,Variant> variants;
+std::unordered_map<uint32_t,std::array<uint32_t,101>> catalog;
+std::vector<uint32_t> inventories, players;
+struct Change {
+    uint32_t session, inventory, slot, old_id, pide, new_id;
+    int level, rarity, bonus;
+    void* registry;
+    bool restoring;
 };
-const EmfApi* api = nullptr;
-std::vector<speedmod::Effect> effects;
-uint32_t session = 0;
-int64_t next_poll = 0, next_discover = 0;
-bool spawn_warning = false, joined_warning = false;
+std::vector<Change> queue;
+std::vector<uint32_t> queued_players;
+std::mutex queue_mutex;
+std::atomic<bool> restore_mode{false};
+std::atomic<uint64_t> changed{0};
+uint32_t session=0;
+int64_t next_poll=0,next_discover=0;
+bool ready=false, warned=false;
 
-template<class T> T* component(EmfWorld* world, uint32_t entity) {
-    uint64_t size = 0;
-    void* p = api->get_component(world, T::kHash, entity, &size);
-    return p && size == sizeof(T) ? static_cast<T*>(p) : nullptr;
+template<class T> T* component(EmfWorld* w,uint32_t entity) {
+    uint64_t size=0;void* p=api->get_component(w,T::kHash,entity,&size);
+    return p && size==sizeof(T) ? static_cast<T*>(p) : nullptr;
 }
-
-bool gameplay_boot(EmfWorld* world, uint32_t item) {
-    uint64_t size = 0;
-    const auto* p = static_cast<const uint8_t*>(api->item_data(world, item, &size));
-    // Offsets and IsVanityItem bit checked against local build reflection.
-    if (!p || size != 2088 || p[260] != 17) return false;
-    uint64_t flags = 0;
-    std::memcpy(&flags, p + 1496, sizeof(flags));
-    return (flags & (1ULL << 18)) == 0;
+template<class T> const T* read(void* ctx,const char* name,uint32_t entity) {
+    return static_cast<const T*>(api->program_read_other(ctx,name,entity,sizeof(T)));
 }
-
-speedmod::Boot equipped_boot(EmfWorld* world, uint32_t player) {
-    auto* slots = component<ecs::SlotSelection>(world, player);
-    if (!slots) return {};
-    const auto slot = slots->equipment.armourFeet;
-    if (!slot.entityId.id || slot.entityId.id == UINT32_MAX) return {};
-    const uint32_t index = slot.slotIndex;
-    if (index >= 8) return {};
-    auto* inv = component<ecs::Inventory>(world, slot.entityId.id);
-    if (!inv) return {};
-    const auto& stack = inv->slots[index];
-    if (!stack.id.value || !stack.data.count || !stack.data.pide.id || !gameplay_boot(world, stack.id.value)) return {};
-    auto* state = component<ecs::ItemState>(world, stack.data.pide.id);
-    auto* perks = component<ecs::PerkContainerNew>(world, stack.data.pide.id);
-    const int rarity = speedmod::actual_rarity(perks ? perks->availablePerks : 0,
-                                               state ? static_cast<int>(state->itemRarityUi) : -1);
-    return {stack.id.value, stack.data.pide.id, rarity};
+template<class T> T* write(void* ctx,const char* name,uint32_t entity) {
+    return static_cast<T*>(api->program_write_other(ctx,name,entity,sizeof(T)));
 }
-
-void discover_player(uint32_t entity, void* opaque) {
-    auto* world = static_cast<EmfWorld*>(opaque);
-    if (!component<ecs::PlayerInput>(world, entity) || !component<ecs::SlotSelection>(world, entity)) return;
-    auto it = std::find_if(effects.begin(), effects.end(), [entity](const auto& e) { return e.player == entity; });
-    if (it == effects.end()) effects.push_back({entity});
+bool gameplay_boot(EmfWorld* w,uint32_t id) {
+    uint64_t size=0;const auto* p=static_cast<const uint8_t*>(api->item_data(w,id,&size));
+    if(!p || size!=2088 || p[260]!=17)return false;
+    uint32_t flags=0;std::memcpy(&flags,p+1496,4);
+    return (flags&(1u<<18))==0 && (flags&(1u<<1))!=0;
 }
-
-bool valid_effect(EmfWorld* world, uint32_t entity, uint32_t player) {
-    auto* hierarchy = component<ecs::ImpactHierarchy>(world, entity);
-    return hierarchy && hierarchy->parentImpactId.id == player && component<ecs::LifeTime>(world, entity);
+void item_visit(const EmfItemInfo* item,void* opaque) {
+    auto* w=static_cast<EmfWorld*>(opaque);
+    unsigned base=0;int bonus=-1,used=0;
+    if(sscanf_s(item->name,"SM02_Boot_%8x_P%3d%n",&base,&bonus,&used)==2 &&
+       used==23 && item->name[used]=='\0' && bonus>=0 && bonus<=100 && gameplay_boot(w,item->item_id)) {
+        catalog[base][bonus]=item->item_id;
+        variants[item->item_id]={base,bonus};
+    }
 }
-
-bool clear_effect(EmfWorld* world, speedmod::Effect& effect, int64_t now) {
-    if (effect.entity) {
-        if (valid_effect(world, effect.entity, effect.player)) {
-            if (!api->destroy(world, effect.entity)) return false;
-        } else if (now - effect.spawned_at < speedmod::kLeaseNs) {
-            return false; // cancellation waits for a queued spawn, never overlaps it
+bool build_catalog(EmfWorld* w) {
+    catalog.clear();variants.clear();api->for_each_item(w,item_visit,w);
+    if(catalog.empty())return false;
+    for(const auto& entry:catalog) {
+        if(!gameplay_boot(w,entry.first))return false;
+        for(const auto id:entry.second)if(!id)return false;
+    }
+    api->log(kId,"Catalog: %zu boots, %zu persistent variants",catalog.size(),variants.size());return true;
+}
+void discover(uint32_t entity,void* opaque) {
+    auto* w=static_cast<EmfWorld*>(opaque);
+    if(component<ecs::Inventory>(w,entity))inventories.push_back(entity);
+    if(component<ecs::PlayerInput>(w,entity) && component<ecs::SlotSelection>(w,entity))players.push_back(entity);
+}
+void apply_changes(void* ctx,void*) {
+    std::vector<Change> batch;std::vector<uint32_t> current_players;
+    {std::lock_guard<std::mutex> lock(queue_mutex);batch.swap(queue);current_players=queued_players;}
+    for(const auto& c:batch) {
+        if(!c.registry || c.session!=api->server_session() || c.registry!=api->program_singleton(ctx,kRegistry) ||
+           c.restoring!=restore_mode.load())continue;
+        const auto* inv=read<ecs::Inventory>(ctx,"Inventory",c.inventory);
+        const auto* used=read<ecs::UsedItem>(ctx,"UsedItem",c.pide);
+        const auto* state=read<ecs::ItemState>(ctx,"ItemState",c.pide);
+        if(!inv || !used || !state || c.slot>=8)continue;
+        const auto& stack=inv->slots[c.slot];
+        if(stack.id.value!=c.old_id || stack.data.pide.id!=c.pide || stack.data.count!=1 ||
+           used->itemId.value!=c.old_id || state->itemId.value!=c.old_id ||
+           state->containedInSlotId.entityId.id!=c.inventory || state->containedInSlotId.slotIndex!=c.slot)continue;
+        if(!c.restoring) {
+            const auto* level=read<ecs::Level>(ctx,"Level",c.pide);
+            const auto* perks=read<ecs::PerkContainerNew>(ctx,"PerkContainerNew",c.pide);
+            const int actual_level=level ? int(level->dataStorage[0]) : state->itemLevelUi;
+            if(actual_level!=c.level || speedmod::actual_rarity(perks?perks->availablePerks:0,int(state->itemRarityUi))!=c.rarity)continue;
+        }
+        // Reserve equipment notification before any mutation. Rebuild the native effect on a worn shoe.
+        bool event_failed=false;
+        for(const auto player:current_players) {
+            const auto* slots=read<ecs::SlotSelection>(ctx,"SlotSelection",player);
+            if(!slots || slots->equipment.armourFeet.entityId.id!=c.inventory || slots->equipment.armourFeet.slotIndex!=c.slot)continue;
+            auto* event=static_cast<ecs::HandleEquipmentSlotChangedEvent*>(api->emit_event(ctx,"HandleEquipmentSlotChangedEvent",sizeof(ecs::HandleEquipmentSlotChangedEvent)));
+            if(!event) { event_failed=true;break; }
+            event->playerEntityId.id=player;event->equipmentSlot=emf::gen::EquipmentSlot::Armour_Feet;
+        }
+        if(event_failed)continue;
+        auto* wi=write<ecs::Inventory>(ctx,"Inventory",c.inventory);
+        auto* wu=write<ecs::UsedItem>(ctx,"UsedItem",c.pide);
+        auto* ws=write<ecs::ItemState>(ctx,"ItemState",c.pide);
+        if(!wi || !wu || !ws)continue;
+        // Keep the SAME PIDE: level, rarity, upgrades, gems, dye, ownership and durability are untouched.
+        wi->slots[c.slot].id.value=c.new_id;wu->itemId.value=c.new_id;ws->itemId.value=c.new_id;
+        ++changed;
+        api->log(kId,"%s inventory=%u slot=%u pide=%u item=%08x -> %08x level=%d rarity=%d bonus=+%d%%",
+                 c.restoring?"Restored":"Rolled",c.inventory,c.slot,c.pide,c.old_id,c.new_id,c.level,c.rarity,c.bonus);
+    }
+}
+void tick(EmfWorld* w,void*) {
+    if(api->world_kind(w)!=EMF_WORLD_SERVER)return;
+    const uint32_t epoch=api->server_session();const int64_t now=api->ecs_time_ns(w);
+    if(epoch!=session || now<next_poll-250000000LL) {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        queue.clear();queued_players.clear();inventories.clear();players.clear();
+        session=epoch;next_poll=next_discover=0;ready=false;warned=false;
+    }
+    if(now<next_poll)return;next_poll=now+250000000LL;
+    if(!ready) {
+        ready=build_catalog(w);
+        if(!ready) {
+            if(!warned)api->log(kId,"Missing/incomplete 0.2 EML variants; refusing item conversion.");
+            warned=true;next_poll=now+5000000000LL;return;
         }
     }
-    effect.entity = 0;
-    effect.boot = {};
-    return true;
-}
-
-void tick(EmfWorld* world, void*) {
-    if (api->world_kind(world) != EMF_WORLD_SERVER) {
-        if (!api->server_world() && !joined_warning) {
-            api->log(kId, "Joined-client movement prediction is unverified. This alpha applies effects on the host only.");
-            joined_warning = true;
-        }
-        return;
+    if(now>=next_discover) {
+        inventories.clear();players.clear();api->for_each_entity(w,discover,w);next_discover=now+1000000000LL;
     }
-    const uint32_t now_session = api->server_session();
-    const int64_t now = api->ecs_time_ns(world);
-    if (session != now_session || now < next_poll - speedmod::kPollNs) {
-        effects.clear();
-        session = now_session;
-        next_poll = next_discover = 0;
-        spawn_warning = false;
-    }
-    if (now < next_poll) return;
-    next_poll = now + speedmod::kPollNs;
-    if (now >= next_discover) {
-        api->for_each_entity(world, discover_player, world);
-        next_discover = now + speedmod::kDiscoverNs;
-    }
-    for (auto& effect : effects) {
-        if (!component<ecs::PlayerInput>(world, effect.player)) {
-            if (!clear_effect(world, effect, now)) continue;
-            effect.player = 0;
-            continue;
-        }
-        const auto boot = equipped_boot(world, effect.player);
-        if (effect.boot != boot && !clear_effect(world, effect, now)) continue;
-        if (!boot.valid()) continue;
-        if (effect.entity) {
-            if (valid_effect(world, effect.entity, effect.player)) {
-                auto* life = component<ecs::LifeTime>(world, effect.entity);
-                if (!life->triggeredDestroy) {
-                    life->lifeTime.value = speedmod::kLeaseNs;
-                    life->endOfLife.value = now + speedmod::kLeaseNs;
-                    continue;
-                }
-            } else if (now - effect.spawned_at < speedmod::kLeaseNs) {
-                continue; // a spawn may be queued; never spawn duplicates
-            }
-            if (!clear_effect(world, effect, now)) continue;
-        }
-        ecs::ImpactHierarchy hierarchy{};
-        hierarchy.parentImpactId.id = effect.player;
-        hierarchy.rootImpactId.id = effect.player;
-        hierarchy.weaponPideId.id = boot.pide;
-        hierarchy.permissionCheckId.id = effect.player;
-        ecs::LifeTime life{};
-        life.lifeTime.value = speedmod::kLeaseNs;
-        life.endOfLife.value = now + speedmod::kLeaseNs;
-        life.enforceDestroy = true;
-        const EmfComponentInit initializers[] = {
-            {ecs::ImpactHierarchy::kHash, sizeof(hierarchy), &hierarchy},
-            {ecs::LifeTime::kHash, sizeof(life), &life},
-        };
-        const uint32_t spawned = api->spawn_ex(world, kTemplates[boot.rarity], 0, 0, 0, initializers, 2);
-        if (spawned) {
-            effect.entity = spawned;
-            effect.boot = boot;
-            effect.spawned_at = now;
-            api->log(kId, "Player %u: item %08x, instance %u, rarity %d, effect %u", effect.player, boot.item, boot.pide, boot.rarity, spawned);
-        } else if (!spawn_warning) {
-            api->log(kId, "Cannot spawn bonus effect. Ensure the SpeedMod EML patch ran before loading the world.");
-            spawn_warning = true;
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    // Do not overwrite a batch still awaiting the next safe program callback.
+    if(!queue.empty())return;
+    queued_players=players;
+    std::unordered_set<uint32_t> seen;
+    const bool restoring=restore_mode.load();
+    for(const auto entity:inventories) {
+        const auto* inv=component<ecs::Inventory>(w,entity);if(!inv)continue;
+        for(uint32_t slot=0;slot<8 && queue.size()<256;++slot) {
+            const auto& s=inv->slots[slot];
+            if(!s.data.pide.id || s.data.count!=1 || seen.count(s.data.pide.id))continue;
+            const auto variant=variants.find(s.id.value);const auto base=catalog.find(s.id.value);
+            if(restoring ? variant==variants.end() : (variant!=variants.end() || base==catalog.end()))continue;
+            const auto* state=component<ecs::ItemState>(w,s.data.pide.id);
+            const auto* used=component<ecs::UsedItem>(w,s.data.pide.id);
+            const auto* level=component<ecs::Level>(w,s.data.pide.id);
+            const auto* perks=component<ecs::PerkContainerNew>(w,s.data.pide.id);
+            if(!state || !used || state->itemId.value!=s.id.value || used->itemId.value!=s.id.value)continue;
+            const int lv=level?int(level->dataStorage[0]):state->itemLevelUi;
+            const int rarity=speedmod::actual_rarity(perks?perks->availablePerks:0,int(state->itemRarityUi));
+            if(!restoring && (lv<1 || lv>255 || rarity<0))continue;
+            const int bonus=restoring?variant->second.bonus:speedmod::roll(settings,lv,rarity,rng);
+            const uint32_t target=restoring?variant->second.base:base->second[bonus];
+            queue.push_back({epoch,entity,slot,s.id.value,s.data.pide.id,target,lv,rarity,bonus,api->singleton(w,kRegistry),restoring});
+            seen.insert(s.data.pide.id);
         }
     }
-    effects.erase(std::remove_if(effects.begin(), effects.end(), [](const auto& e) { return e.player == 0; }), effects.end());
 }
-
-void status(EmfWorld*, int, const char* const*, void*) {
-    api->command_reply("SpeedMod alpha: native effects from actual worn rarity. Live movement and multiplayer are unverified.");
-    for (const auto& effect : effects)
-        api->command_reply("Player %u: rarity %d, instance %u, effect %u", effect.player, effect.boot.rarity, effect.boot.pide, effect.entity);
+void status(EmfWorld*,int,const char* const*,void*) {
+    api->command_reply("SpeedMod 0.2.0: %s, conversions=%llu. Existing variants never reroll. Live save/multiplayer tests pending.",restore_mode.load()?"RESTORE":"ROLL",static_cast<unsigned long long>(changed.load()));
+}
+void restore(EmfWorld*,int,const char* const*,void*) {
+    restore_mode=true;
+    api->command_reply("RESTORE mode: converting LOADED shoes to original IDs. Stops random rolls until restart. Keep EML data until ALL offline characters/chests are restored and saved.");
+}
+bool load_settings() {
+    HMODULE module=nullptr;wchar_t path[MAX_PATH]{};
+    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&api),&module) ||
+       !GetModuleFileNameW(module,path,MAX_PATH))return false;
+    auto* slash=wcsrchr(path,L'\\');if(!slash)return false;wcscpy_s(slash+1,MAX_PATH-size_t(slash+1-path),L"config.ini");
+    if(GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES)return false;
+    const auto get=[&](const wchar_t* section,const wchar_t* key,int fallback) {return int(GetPrivateProfileIntW(section,key,fallback,path));};
+    settings.low=get(L"Levels",L"Low",1);settings.high=get(L"Levels",L"High",45);
+    const wchar_t* names[]={L"Common",L"Uncommon",L"Rare",L"Epic",L"Legendary"};
+    for(int i=0;i<5;++i) {
+        auto& r=settings.rarity[i];r.low_min=get(names[i],L"LowMin",r.low_min);r.low_max=get(names[i],L"LowMax",r.low_max);
+        r.high_min=get(names[i],L"HighMin",r.high_min);r.high_max=get(names[i],L"HighMax",r.high_max);
+    }
+    return settings.valid();
 }
 }
-
 extern "C" __declspec(dllexport) bool emf_mod_load(const EmfApi* incoming) {
-    if (!incoming || incoming->size < offsetof(EmfApi, game_build) + sizeof(incoming->game_build) ||
-        !incoming->game_build || !incoming->spawn_ex || !incoming->item_data || !incoming->server_session) return false;
-    EmfGameBuild build{};
-    build.size = sizeof(build);
-    if (!incoming->game_build(&build) || !build.known || build.number != kSupportedBuild) {
-        incoming->log(kId, "Unsupported build. Reflected against 1283531; refusing to touch ECS data.");
-        return false;
-    }
-    api = incoming;
-    api->on_tick(tick, nullptr);
-    api->register_command("speedmod_boots.status", ": show equipped-rarity effects", status, nullptr);
-    api->log(kId, "Loaded alpha for build 1283531. Requires SpeedMod EML resources. No inventory or save edits.");
-    return true;
+    if(!incoming || incoming->version<16 || incoming->size<offsetof(EmfApi,program_write_other)+sizeof(incoming->program_write_other) ||
+       !incoming->game_build || !incoming->program_write_other || !incoming->program_read_other || !incoming->register_program_def)return false;
+    EmfGameBuild build{};build.size=sizeof(build);
+    if(!incoming->game_build(&build) || !build.known || build.number!=1283531)return false;
+    api=incoming;
+    if(!load_settings()) {api->log(kId,"Missing/invalid config.ini; refusing conversions");return false;}
+    try {std::random_device seed;rng.seed((uint64_t(seed())<<32)^seed());}catch(...) {return false;}
+    static const char* reads[]={"Inventory","UsedItem","ItemState","Level","PerkContainerNew","SlotSelection",nullptr};
+    static const char* writes[]={"Inventory","UsedItem","ItemState",nullptr};
+    static const char* singletons[]={kRegistry,nullptr};
+    static const char* events[]={"HandleEquipmentSlotChangedEvent",nullptr};
+    EmfProgramDef def{};def.size=sizeof(def);def.name="speedmod_boot_rolls";def.world_kind=EMF_WORLD_SERVER;
+    def.fn=apply_changes;def.singletons=singletons;def.other_read=reads;def.other_write=writes;def.events_out=events;
+    if(!api->register_program_def(&def))return false;
+    api->on_tick(tick,nullptr);
+    api->register_command("speedmod_boots.status",": show roll mode",status,nullptr);
+    api->register_command("speedmod_boots.restore",": restore LOADED shoes before uninstall",restore,nullptr);
+    api->log(kId,"Loaded 0.2.0: persistent level/rarity rolls. Requires matching EML data on ALL peers.");return true;
 }

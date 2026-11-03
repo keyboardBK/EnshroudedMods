@@ -8,6 +8,7 @@ if not defined VCINSTALLDIR (
 if not defined VCINSTALLDIR exit /b 1
 cd /d "%~dp0"
 if not exist build mkdir build
+copy /y runtime\config.ini build\config.ini >nul
 cl /nologo /std:c++17 /EHsc /utf-8 /W4 /WX /O2 /MT /LD /I"..\third_party\emf\include" runtime\boots_runtime.cpp /Fo:build\boots_runtime.obj /Fe:build\speedmod_boots.dll /link /IMPLIB:build\speedmod_boots.lib
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /utf-8 /W4 /WX /Od /MT /I"..\third_party\emf\include" tests\runtime_tests.cpp /Fo:build\runtime_tests.obj /Fe:build\runtime_tests.exe
