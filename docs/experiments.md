@@ -1,5 +1,7 @@
 # EML 변형 아이템을 대체하는 세 가지 실험
 
+후속 작업으로 [0.3 서버 기록 방식](../SpeedMod/server/README.ko.md)을 구현했습니다. 마지막 위치·이름으로 연결하고 실패 시 새로 추첨하는 정책입니다. 아래 실험의 영구 키 검증 요구와는 다른, 사용자가 허용한 복원 정책입니다. 신발 ItemId 변환은 없으며 임시 효과만 사용합니다.
+
 기준 커밋은 b059dd1이며 기존 feature/random-boot-sprint와 main은 유지합니다.
 실험 코드는 각 브랜치의 Experiments/BootLab에 있습니다. 기존 SpeedMod 폴더와 설치 EXE는 비교 기준 코드이며 실험을 설치하지 않습니다.
 

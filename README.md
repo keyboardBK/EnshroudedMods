@@ -1,4 +1,18 @@
-# EnshroudedMods — SpeedMod 0.2.1 alpha — 랜덤 버전 개발 브랜치
+# EnshroudedMods — SpeedMod 0.3 서버 기록 방식
+
+현재 작업 버전은 [SpeedMod/server](SpeedMod/server/README.ko.md)입니다. 호스트가 신발의 내부 이름과 마지막 보관 위치로 추첨값을 저장하고, 연결 실패 시 한 번 새로 추첨합니다. 신발 ItemId를 바꾸거나 기본 툴팁을 수정하지 않습니다.
+
+빌드 1285601 / EMF 0.4.1에서 빌드·서버 기록/복원·구형 신발 삭제 대상 검사·설치 롤백·공식 콘텐츠 DLL 검증을 통과했습니다. 실제 게임에서 시작 메뉴 진입과 새 DLL 로딩도 확인했으며 월드는 열지 않았습니다. 실제 이동·재접속·친구 이동 예측 검증은 남아 있습니다.
+
+0.2.x에서 전환하면 구형 SM02 변형 신발을 삭제합니다. 현재 로드된 캐릭터·창고를 검사하고, 아직 로드되지 않은 창고는 이후 로드 시 처리합니다. 원본 신발은 유지합니다.
+
+**[SpeedMod 0.3.0 설치 ZIP 다운로드](https://github.com/keyboardBK/EnshroudedMods/raw/refs/heads/feature/random-boot-sprint/SpeedMod/server/distribution/SpeedMod-Server-0.3.0.zip)** → 압축 해제 → 게임 종료 → `install.cmd` 실행. Steam 라이브러리에서 설치 경로를 자동으로 찾습니다. 직접 지정하려면 `install.cmd -Game "게임 폴더"`를 사용합니다.
+
+신발 장착·교체 시 호스트 화면에 추가 보너스 알림을 표시합니다. 자동 테스트는 통과했으며 실제 게임 화면의 알림 검증은 남아 있습니다.
+
+소스 빌드는 `SpeedMod/server/build.cmd`입니다. EMF 내장 EML 빌더가 별도 데이터 복사본을 만들며 구형 메모리 부트스트랩은 제거합니다. 아래 0.2.1 EXE는 이전 버전이며 0.3 설치에 사용하지 않습니다.
+
+## 이전 0.2.1 구현과 설치기
 
 신발의 **실제 아이템 레벨·등급**으로 추가 질주속도를 한 번 추첨합니다. 플레이어 레벨은 사용하지 않습니다.
 기존 보유품, 제작품, 드롭품 모두 서버에서 처음 확인될 때 대상이며 외형 신발은 제외합니다.

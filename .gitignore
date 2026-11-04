@@ -10,3 +10,4 @@
 *.lib
 *.exp
 *.zip
+!SpeedMod/server/distribution/SpeedMod-Server-*.zip

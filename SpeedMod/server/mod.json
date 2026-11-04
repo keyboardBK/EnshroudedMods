@@ -1,0 +1,9 @@
+{
+  "id": "speedmod_server",
+  "name": "SpeedMod - Server boot records",
+  "version": "0.3.0",
+  "description": "Host-owned name/location records. Failed connections reroll once. Removes old SM02 shoes from loaded inventories and chests.",
+  "authors": ["KeyboardBK"],
+  "emf": 16,
+  "side": "both"
+}
